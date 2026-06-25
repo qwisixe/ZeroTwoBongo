@@ -6,6 +6,7 @@ import os
 import json
 import hashlib
 import random
+import subprocess
 import time
 
 try:
@@ -23,7 +24,8 @@ UPGRADE_FILE = "upgrades.txt"
 SAVEGAME_FILE = "savegame.txt"
 SETTINGS_FILE = "settings.txt"
 
-# "секрет" для подписи сохранения (не палим пользователям)
+# Версия игры и форма сохранения
+GAME_VERSION = "v0.4.0"
 SAVE_SECRET = "zero_two_super_secret_salt_2026"
 SAVE_SCHEMA_VERSION = 2
 STATUS_DISPLAY_MS = 2800
@@ -135,14 +137,23 @@ class ZeroTwoGame(tk.Tk):
         self.screen_width = self.winfo_screenwidth()
         self.screen_height = self.winfo_screenheight()
 
-        # загрузка настроек (разрешение, тема)
-        self.window_width, self.window_height, self.active_theme = self.load_settings()
+        # загрузка настроек (разрешение, тема, звук, автосохранение, полноэкранный режим)
+        (
+            self.window_width,
+            self.window_height,
+            self.active_theme,
+            self.sound_enabled,
+            self.auto_save_enabled,
+            self.fullscreen,
+        ) = self.load_settings()
 
-        self.title("Zero Two Bongo")
+        self.title(f"Zero Two Bongo {GAME_VERSION}")
         self.set_geometry(self.window_width, self.window_height)
+        self.ensure_desktop_shortcut()
 
         # состояние игры (дефолт)
         self.score = 0
+        self.best_score = 0
         self.multiplier = 1.0
         self.auto_interval_ms = 0
         self.use_alt_skin = False
@@ -249,6 +260,8 @@ class ZeroTwoGame(tk.Tk):
                 pass
 
     def play_sound(self, sound_name):
+        if not getattr(self, "sound_enabled", True):
+            return
         path = self.sound_paths.get(sound_name)
         if not path or not os.path.exists(path):
             return
@@ -281,7 +294,11 @@ class ZeroTwoGame(tk.Tk):
     # ===== работа с окном / настройками =====
 
     def set_geometry(self, w, h):
-        self.geometry(f"{w}x{h}+100+100")
+        if getattr(self, "fullscreen", False):
+            self.attributes("-fullscreen", True)
+        else:
+            self.attributes("-fullscreen", False)
+            self.geometry(f"{w}x{h}+100+100")
         self.minsize(self.default_width, self.default_height)
         self.maxsize(self.screen_width, self.screen_height)
         bg_color = self.theme_color("bg") if hasattr(self, "active_theme") else "#ffb6c1"
@@ -289,31 +306,87 @@ class ZeroTwoGame(tk.Tk):
 
     def load_settings(self):
         theme = "pink"
+        sound_enabled = True
+        auto_save_enabled = True
+        fullscreen = False
         if os.path.exists(SETTINGS_FILE):
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    w = max(self.default_width, int(data.get("width", self.default_width)))
-                    h = max(self.default_height, int(data.get("height", self.default_height)))
+                    w = min(self.screen_width, max(self.default_width, int(data.get("width", self.default_width))))
+                    h = min(self.screen_height, max(self.default_height, int(data.get("height", self.default_height))))
                     theme = str(data.get("theme", theme))
                     if theme not in THEMES:
                         theme = "pink"
-                    return w, h, theme
+                    sound_enabled = bool(data.get("sound_enabled", sound_enabled))
+                    auto_save_enabled = bool(data.get("auto_save_enabled", auto_save_enabled))
+                    fullscreen = bool(data.get("fullscreen", fullscreen))
+                    return w, h, theme, sound_enabled, auto_save_enabled, fullscreen
             except Exception:
-                return self.default_width, self.default_height, theme
-        return self.default_width, self.default_height, theme
+                return self.default_width, self.default_height, theme, sound_enabled, auto_save_enabled, fullscreen
+        return self.default_width, self.default_height, theme, sound_enabled, auto_save_enabled, fullscreen
 
     def save_settings(self):
         data = {
             "width": self.window_width,
             "height": self.window_height,
             "theme": self.active_theme,
+            "sound_enabled": self.sound_enabled,
+            "auto_save_enabled": self.auto_save_enabled,
+            "fullscreen": self.fullscreen,
         }
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+
+    def get_desktop_path(self):
+        try:
+            from ctypes import wintypes, windll, create_unicode_buffer
+            CSIDL_DESKTOPDIRECTORY = 0x0010
+            SHGFP_TYPE_CURRENT = 0
+            buf = create_unicode_buffer(wintypes.MAX_PATH)
+            res = windll.shell32.SHGetFolderPathW(None, CSIDL_DESKTOPDIRECTORY, None, SHGFP_TYPE_CURRENT, buf)
+            if res == 0:
+                return buf.value
+        except Exception:
+            pass
+        return os.path.join(os.path.expanduser("~"), "Desktop")
+
+    def create_desktop_shortcut(self, target_path, shortcut_path, icon_path=None):
+        try:
+            if os.path.exists(shortcut_path):
+                return True
+            target_path = os.path.normpath(target_path)
+            icon_path = os.path.normpath(icon_path) if icon_path else target_path
+            ps_script = (
+                f"$ws = New-Object -ComObject WScript.Shell; "
+                f"$sc = $ws.CreateShortcut('{shortcut_path}'); "
+                f"$sc.TargetPath = '{target_path}'; "
+                f"$sc.WorkingDirectory = '{os.path.dirname(target_path)}'; "
+                f"$sc.IconLocation = '{icon_path},0'; "
+                f"$sc.Save();"
+            )
+            subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], check=True, capture_output=True)
+            return True
+        except Exception:
+            return False
+
+    def ensure_desktop_shortcut(self):
+        if not sys.platform.startswith("win"):
+            return
+        app_path = os.path.abspath(sys.argv[0])
+        if not app_path.lower().endswith("zerotwobongo.exe"):
+            return
+        desktop = self.get_desktop_path()
+        if not desktop or not os.path.isdir(desktop):
+            return
+        shortcut = os.path.join(desktop, "ZeroTwoBongo.lnk")
+        icon_file = get_resource_path("ZeroTwoBongo.ico")
+        if not os.path.exists(icon_file):
+            icon_file = app_path
+        self.create_desktop_shortcut(app_path, shortcut, icon_file)
 
     # ===== миграция со старых txt (один раз) =====
 
@@ -397,7 +470,7 @@ class ZeroTwoGame(tk.Tk):
 
         label = tk.Label(
             self.current_frame,
-            text="Главный разработчик - qwisixe\nВерсия игры: 2.0",
+            text=f"Главный разработчик - qwisixe\nВерсия игры: {GAME_VERSION}",
             fg=self.theme_color("text"),
             bg=self.theme_color("bg"),
             font=("Arial", 22, "bold"),
@@ -628,12 +701,15 @@ class ZeroTwoGame(tk.Tk):
             self.quest_progress["alt_skin"] = True
             self.show_status("Достижение: ALT Skin разблокирован!", duration=STATUS_DISPLAY_MS)
 
-    def save_game_manual(self):
+    def save_game_manual(self, show_notification=True):
         # сохраняем состояние
         payload = {
             "score": self.score,
+            "best_score": self.best_score,
             "multiplier": self.multiplier,
             "auto_interval_ms": self.auto_interval_ms,
+            "sound_enabled": self.sound_enabled,
+            "auto_save_enabled": self.auto_save_enabled,
             "use_alt_skin": self.use_alt_skin,
             "anim_speed_factor": self.anim_speed_factor,
             "alt_unlocked": self.alt_unlocked,
@@ -659,7 +735,7 @@ class ZeroTwoGame(tk.Tk):
             pass
 
         # если есть панель (в игре), показываем уведомление
-        if hasattr(self, "panel"):
+        if show_notification and hasattr(self, "panel"):
             info = tk.Label(
                 self.panel,
                 text="Игра сохранена",
@@ -687,8 +763,11 @@ class ZeroTwoGame(tk.Tk):
                 return
 
             self.score = int(payload.get("score", self.score))
+            self.best_score = int(payload.get("best_score", self.best_score))
             self.multiplier = float(payload.get("multiplier", self.multiplier))
             self.auto_interval_ms = int(payload.get("auto_interval_ms", self.auto_interval_ms))
+            self.sound_enabled = bool(payload.get("sound_enabled", self.sound_enabled))
+            self.auto_save_enabled = bool(payload.get("auto_save_enabled", self.auto_save_enabled))
             self.use_alt_skin = bool(payload.get("use_alt_skin", self.use_alt_skin))
             self.anim_speed_factor = float(payload.get("anim_speed_factor", self.anim_speed_factor))
             self.alt_unlocked = bool(payload.get("alt_unlocked", self.alt_unlocked))
@@ -749,7 +828,8 @@ class ZeroTwoGame(tk.Tk):
     # ===== текст счёта =====
 
     def score_text(self):
-        return f"Score: {self.score}  (x{self.multiplier:.1f})"
+        best = f"  Best: {self.best_score}" if self.best_score else ""
+        return f"Score: {self.score}  (x{self.multiplier:.1f}){best}"
 
     def update_score_label(self):
         self.score_label.config(text=self.score_text())
@@ -758,6 +838,7 @@ class ZeroTwoGame(tk.Tk):
         gained = int(amount * self.multiplier)
         self.score += gained
         self.apply_anti_cheat_limits()
+        self.best_score = max(self.best_score, self.score)
         self.update_score_label()
         if source == "hit":
             self.show_status(f"Hit! +{gained}")
@@ -1185,12 +1266,67 @@ class ZeroTwoGame(tk.Tk):
             )
             btn.pack(pady=4)
 
+        label_options = tk.Label(
+            settings_win,
+            text="Дополнительные опции",
+            fg=self.theme_color("text"),
+            bg=self.theme_color("bg"),
+            font=("Arial", 12),
+        )
+        label_options.pack(pady=(12, 4))
+
+        sound_var = tk.BooleanVar(value=self.sound_enabled)
+        sound_checkbox = tk.Checkbutton(
+            settings_win,
+            text="Включить звук",
+            variable=sound_var,
+            command=lambda: self.set_sound_option(sound_var.get()),
+            fg=self.theme_color("text"),
+            bg=self.theme_color("bg"),
+            selectcolor=self.theme_color("panel"),
+            activebackground=self.theme_color("bg"),
+            highlightthickness=0,
+            bd=0,
+        )
+        sound_checkbox.pack(anchor="w", padx=20, pady=2)
+
+        autosave_var = tk.BooleanVar(value=self.auto_save_enabled)
+        autosave_checkbox = tk.Checkbutton(
+            settings_win,
+            text="Автосохранение",
+            variable=autosave_var,
+            command=lambda: self.set_autosave_option(autosave_var.get()),
+            fg=self.theme_color("text"),
+            bg=self.theme_color("bg"),
+            selectcolor=self.theme_color("panel"),
+            activebackground=self.theme_color("bg"),
+            highlightthickness=0,
+            bd=0,
+        )
+        autosave_checkbox.pack(anchor="w", padx=20, pady=2)
+
+        fullscreen_var = tk.BooleanVar(value=self.fullscreen)
+        fullscreen_checkbox = tk.Checkbutton(
+            settings_win,
+            text="Полноэкранный режим",
+            variable=fullscreen_var,
+            command=lambda: self.set_fullscreen_option(fullscreen_var.get()),
+            fg=self.theme_color("text"),
+            bg=self.theme_color("bg"),
+            selectcolor=self.theme_color("panel"),
+            activebackground=self.theme_color("bg"),
+            highlightthickness=0,
+            bd=0,
+        )
+        fullscreen_checkbox.pack(anchor="w", padx=20, pady=2)
+
         close_btn = self.make_button(settings_win, "Закрыть", settings_win.destroy, width=22)
         close_btn.pack(pady=12)
 
     def apply_resolution(self, settings_win, width, height):
         self.window_width = width
         self.window_height = height
+        self.fullscreen = False
         self.set_geometry(width, height)
         self.save_settings()
         settings_win.destroy()
@@ -1203,6 +1339,22 @@ class ZeroTwoGame(tk.Tk):
             self.save_settings()
             settings_win.destroy()
             self.show_status(f"Тема применена: {theme_name.upper()}")
+
+    def set_sound_option(self, enabled):
+        self.sound_enabled = bool(enabled)
+        self.save_settings()
+        self.show_status("Звук включён" if self.sound_enabled else "Звук выключен")
+
+    def set_autosave_option(self, enabled):
+        self.auto_save_enabled = bool(enabled)
+        self.save_settings()
+        self.show_status("Автосохранение включено" if self.auto_save_enabled else "Автосохранение отключено")
+
+    def set_fullscreen_option(self, enabled):
+        self.fullscreen = bool(enabled)
+        self.set_geometry(self.window_width, self.window_height)
+        self.save_settings()
+        self.show_status("Полноэкранный режим включён" if self.fullscreen else "Оконный режим")
 
 
 if __name__ == "__main__":
