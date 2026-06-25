@@ -1,5 +1,10 @@
+# Сохранения игрока
 score.txt
 upgrades.txt
+savegame.txt
+settings.txt
+
+# Сборки
 dist/
 build/
 *.spec

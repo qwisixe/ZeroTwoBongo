@@ -2,24 +2,32 @@ import tkinter as tk
 from PIL import Image, ImageTk
 from itertools import count
 import os
+import json
 
 MAIN_GIF = "zero_two.gif"
 ALT_GIF = "zero_two_alt.gif"
+
 SCORE_FILE = "score.txt"
 UPGRADE_FILE = "upgrades.txt"
+SAVEGAME_FILE = "savegame.txt"
+SETTINGS_FILE = "settings.txt"
 
 
 class ZeroTwoGame(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.title("Zero Two Bongo")
-        self.geometry("640x640+100+100")
-        self.minsize(640, 640)
-        self.maxsize(640, 640)
-        self.configure(bg="#ffb6c1")
+        # настройки окна по умолчанию
+        self.default_width = 640
+        self.default_height = 640
 
-        # состояние
+        # загрузка настроек (разрешение)
+        self.window_width, self.window_height = self.load_settings()
+
+        self.title("Zero Two Bongo")
+        self.set_geometry(self.window_width, self.window_height)
+
+        # состояние игры
         self.score = self.load_score()
         (
             self.multiplier,
@@ -37,6 +45,36 @@ class ZeroTwoGame(tk.Tk):
 
         self.create_start_screen()
 
+    # ===== работа с окном / настройками =====
+
+    def set_geometry(self, w, h):
+        # фиксируем размер окна
+        self.geometry(f"{w}x{h}+100+100")
+        self.minsize(w, h)
+        self.maxsize(w, h)
+        self.configure(bg="#ffb6c1")
+
+    def load_settings(self):
+        # формат settings.txt: JSON с {"width": int, "height": int}
+        if os.path.exists(SETTINGS_FILE):
+            try:
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    w = int(data.get("width", self.default_width))
+                    h = int(data.get("height", self.default_height))
+                    return w, h
+            except Exception:
+                return self.default_width, self.default_height
+        return self.default_width, self.default_height
+
+    def save_settings(self):
+        data = {"width": self.window_width, "height": self.window_height}
+        try:
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception:
+            pass
+
     # ===== стартовый экран =====
 
     def create_start_screen(self):
@@ -49,7 +87,7 @@ class ZeroTwoGame(tk.Tk):
             bg="#ffb6c1",
             font=("Arial", 26, "bold"),
         )
-        title.pack(pady=60)
+        title.pack(pady=40)
 
         play_button = tk.Button(
             self.current_frame,
@@ -66,7 +104,7 @@ class ZeroTwoGame(tk.Tk):
             padx=40,
             pady=10,
         )
-        play_button.pack(pady=20)
+        play_button.pack(pady=10)
 
         dev_button = tk.Button(
             self.current_frame,
@@ -83,7 +121,24 @@ class ZeroTwoGame(tk.Tk):
             padx=40,
             pady=10,
         )
-        dev_button.pack(pady=20)
+        dev_button.pack(pady=10)
+
+        exit_button = tk.Button(
+            self.current_frame,
+            text="Выход",
+            command=self.quit_game,
+            fg="white",
+            bg="#ff1493",
+            activebackground="#ff85c2",
+            activeforeground="white",
+            relief="raised",
+            bd=3,
+            font=("Arial", 18, "bold"),
+            cursor="hand2",
+            padx=40,
+            pady=10,
+        )
+        exit_button.pack(pady=10)
 
     def show_devs(self):
         self._switch_frame(bg="#ffb6c1")
@@ -114,6 +169,9 @@ class ZeroTwoGame(tk.Tk):
         )
         back_button.pack(pady=20)
 
+    def quit_game(self):
+        self.on_close()
+
     # ===== запуск игры =====
 
     def start_game(self):
@@ -126,6 +184,7 @@ class ZeroTwoGame(tk.Tk):
         self.image_label = tk.Label(self.current_frame, bg="#1b1b2f")
         self.image_label.pack(expand=True, fill=tk.BOTH)
 
+        # нижняя панель
         self.panel = tk.Frame(self.current_frame, bg="#ff69b4", height=80)
         self.panel.pack(fill=tk.X, side=tk.BOTTOM)
 
@@ -145,6 +204,79 @@ class ZeroTwoGame(tk.Tk):
         )
         self.score_label.pack(side=tk.LEFT, padx=10)
 
+        # Shop
+        self.shop_button = tk.Button(
+            self.panel,
+            text="Shop",
+            command=self.open_shop,
+            fg="#1b1b2f",
+            bg="#ffc0cb",
+            activebackground="#ffdde8",
+            activeforeground="#1b1b2f",
+            relief="ridge",
+            bd=2,
+            font=("Arial", 12, "bold"),
+            cursor="hand2",
+            padx=10,
+            pady=3,
+        )
+        self.shop_button.pack(side=tk.LEFT, padx=5)
+
+        # кнопка Сохранить
+        self.save_button = tk.Button(
+            self.panel,
+            text="Сохранить",
+            command=self.save_game_manual,
+            fg="#1b1b2f",
+            bg="#ffe4f2",
+            activebackground="#ffd0ec",
+            activeforeground="#1b1b2f",
+            relief="ridge",
+            bd=2,
+            font=("Arial", 11, "bold"),
+            cursor="hand2",
+            padx=8,
+            pady=3,
+        )
+        self.save_button.pack(side=tk.LEFT, padx=5)
+
+        # кнопка Настройки (⚙)
+        self.settings_button = tk.Button(
+            self.panel,
+            text="⚙",
+            command=self.open_settings,
+            fg="#1b1b2f",
+            bg="#ffc0cb",
+            activebackground="#ffdde8",
+            activeforeground="#1b1b2f",
+            relief="ridge",
+            bd=2,
+            font=("Arial", 12, "bold"),
+            cursor="hand2",
+            padx=6,
+            pady=2,
+            width=3,
+        )
+        self.settings_button.pack(side=tk.LEFT, padx=5)
+
+        # Меню
+        self.menu_button = tk.Button(
+            self.panel,
+            text="Меню",
+            command=self.back_to_menu,
+            fg="white",
+            bg="#ff1493",
+            activebackground="#ff85c2",
+            activeforeground="white",
+            relief="raised",
+            bd=2,
+            font=("Arial", 12, "bold"),
+            cursor="hand2",
+            padx=10,
+            pady=3,
+        )
+        self.menu_button.pack(side=tk.LEFT, padx=5)
+
         # Hit
         self.hit_button = tk.Button(
             self.panel,
@@ -163,42 +295,6 @@ class ZeroTwoGame(tk.Tk):
         )
         self.hit_button.pack(side=tk.RIGHT, padx=10)
 
-        # Shop
-        self.shop_button = tk.Button(
-            self.panel,
-            text="Shop",
-            command=self.open_shop,
-            fg="#1b1b2f",
-            bg="#ffc0cb",
-            activebackground="#ffdde8",
-            activeforeground="#1b1b2f",
-            relief="ridge",
-            bd=2,
-            font=("Arial", 12, "bold"),
-            cursor="hand2",
-            padx=10,
-            pady=3,
-        )
-        self.shop_button.pack(side=tk.LEFT, padx=10)
-
-        # Меню
-        self.menu_button = tk.Button(
-            self.panel,
-            text="Меню",
-            command=self.back_to_menu,
-            fg="white",
-            bg="#ff1493",
-            activebackground="#ff85c2",
-            activeforeground="white",
-            relief="raised",
-            bd=2,
-            font=("Arial", 12, "bold"),
-            cursor="hand2",
-            padx=10,
-            pady=3,
-        )
-        self.menu_button.pack(side=tk.LEFT, padx=10)
-
         self.bind("<KeyPress>", self.on_key_press)
 
         # авто-кликер
@@ -207,6 +303,7 @@ class ZeroTwoGame(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def back_to_menu(self):
+        # при выходе в меню сохраняем прогресс
         self.save_score()
         self.save_upgrades()
         self.animation_running = False
@@ -225,7 +322,7 @@ class ZeroTwoGame(tk.Tk):
     # ===== GIF / анимация =====
 
     def load_gif_frames(self):
-        # выбор GIF по флагу use_alt_skin и наличию файла [web:160]
+        # выбор GIF по флагу use_alt_skin и наличию файла
         if self.use_alt_skin and os.path.exists(ALT_GIF):
             gif_path = ALT_GIF
             alt_mode = True
@@ -253,14 +350,15 @@ class ZeroTwoGame(tk.Tk):
 
         base_delay = pil_image.info.get("duration", 100) / 1000.0
 
+        # используем текущий множитель, но его не меняем
         speed_factor = self.anim_speed_factor
         if alt_mode:
-            speed_factor *= 1.5  # ALT чуть быстрее
+            speed_factor *= 1.5  # ALT чуть быстрее, но фиксированный коэффициент
 
         self.base_delay = max(0.02, base_delay / speed_factor)
 
     def restart_animation(self):
-        # аккуратный перезапуск анимации при смене скина/скорости [web:170][web:177]
+        # аккуратный перезапуск анимации при смене скина/скорости
         self.animation_running = False
         self.load_gif_frames()
         self.current_frame_index = 0
@@ -280,7 +378,7 @@ class ZeroTwoGame(tk.Tk):
         delay_ms = int(self.base_delay * 1000)
         self.after(delay_ms, self.animate)
 
-    # ===== сохранение / загрузка =====
+    # ===== сохранение / загрузка базовых файлов =====
 
     def load_score(self):
         if os.path.exists(SCORE_FILE):
@@ -301,7 +399,7 @@ class ZeroTwoGame(tk.Tk):
             pass
 
     def load_upgrades(self):
-        # множитель, автоклик, текущий скин, скорость анимации, флаг "ALT куплен" [web:132][web:184]
+        # множитель, автоклик, текущий скин, скорость анимации, флаг "ALT куплен"
         default = (1.0, 0, False, 1.0, False)
         if os.path.exists(UPGRADE_FILE):
             try:
@@ -331,6 +429,53 @@ class ZeroTwoGame(tk.Tk):
         except Exception:
             pass
 
+    # ===== ручная система сохранений =====
+
+    def save_game_manual(self):
+        # сохраняем всё важное состояние одной JSON-структурой [web:225][web:228]
+        data = {
+            "score": self.score,
+            "multiplier": self.multiplier,
+            "auto_interval_ms": self.auto_interval_ms,
+            "use_alt_skin": self.use_alt_skin,
+            "anim_speed_factor": self.anim_speed_factor,
+            "alt_unlocked": self.alt_unlocked,
+        }
+        try:
+            with open(SAVEGAME_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+        except Exception:
+            pass
+
+        # маленькое уведомление внизу панели
+        info = tk.Label(
+            self.panel,
+            text="Игра сохранена",
+            fg="#1b1b2f",
+            bg="#ff69b4",
+            font=("Arial", 10, "bold"),
+        )
+        info.pack(side=tk.LEFT, padx=5)
+        # убрать уведомление через пару секунд
+        self.after(2000, info.destroy)
+
+    def load_game_manual(self):
+        # можно вызвать на старте игры, если захочешь автозагрузку
+        if os.path.exists(SAVEGAME_FILE):
+            try:
+                with open(SAVEGAME_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.score = int(data.get("score", self.score))
+                self.multiplier = float(data.get("multiplier", self.multiplier))
+                self.auto_interval_ms = int(data.get("auto_interval_ms", self.auto_interval_ms))
+                self.use_alt_skin = bool(data.get("use_alt_skin", self.use_alt_skin))
+                self.anim_speed_factor = float(data.get("anim_speed_factor", self.anim_speed_factor))
+                self.alt_unlocked = bool(data.get("alt_unlocked", self.alt_unlocked))
+            except Exception:
+                pass
+
+    # ===== текст счёта =====
+
     def score_text(self):
         return f"Score: {self.score}  (x{self.multiplier:.1f})"
 
@@ -351,8 +496,10 @@ class ZeroTwoGame(tk.Tk):
         self.add_score(1)
 
     def on_close(self):
+        # при выходе сохраняем прогресс и настройки
         self.save_score()
         self.save_upgrades()
+        self.save_settings()
         self.animation_running = False
         self.auto_click_running = False
         self.destroy()
@@ -465,7 +612,7 @@ class ZeroTwoGame(tk.Tk):
 
         btn_anim = tk.Button(
             shop,
-            text="Ускорить анимацию (x1.5) (120 Score)",
+            text="Ускорить анимацию (x+0.5) (120 Score)",
             fg="white",
             bg="#ff1493",
             activebackground="#ff85c2",
@@ -669,7 +816,8 @@ class ZeroTwoGame(tk.Tk):
     def buy_anim_speed(self, shop_window, info_label, cost):
         if self.score >= cost:
             self.score -= cost
-            self.anim_speed_factor *= 1.5
+            # плавное увеличение скорости вместо бесконечного умножения
+            self.anim_speed_factor += 0.5
             self.restart_animation()
             self.update_score_label()
             self.save_score()
@@ -695,6 +843,69 @@ class ZeroTwoGame(tk.Tk):
             font=("Arial", 11),
         )
         msg.pack(pady=3)
+
+    # ===== окно настроек =====
+
+    def open_settings(self):
+        settings_win = tk.Toplevel(self)
+        settings_win.title("Настройки")
+        settings_win.geometry("260x220+820+180")
+        settings_win.configure(bg="#ffb6c1")
+
+        title = tk.Label(
+            settings_win,
+            text="Разрешение окна",
+            fg="#1b1b2f",
+            bg="#ffb6c1",
+            font=("Arial", 14, "bold"),
+        )
+        title.pack(pady=10)
+
+        # варианты разрешений
+        resolutions = [
+            ("640 x 640", 640, 640),
+            ("800 x 600", 800, 600),
+            ("1024 x 768", 1024, 768),
+        ]
+
+        for text, w, h in resolutions:
+            btn = tk.Button(
+                settings_win,
+                text=text,
+                fg="white",
+                bg="#ff1493",
+                activebackground="#ff85c2",
+                activeforeground="white",
+                relief="raised",
+                bd=2,
+                font=("Arial", 11, "bold"),
+                cursor="hand2",
+                command=lambda width=w, height=h: self.apply_resolution(settings_win, width, height),
+            )
+            btn.pack(pady=5)
+
+        close_btn = tk.Button(
+            settings_win,
+            text="Закрыть",
+            command=settings_win.destroy,
+            fg="white",
+            bg="#ff1493",
+            activebackground="#ff85c2",
+            activeforeground="white",
+            relief="raised",
+            bd=2,
+            font=("Arial", 11, "bold"),
+            cursor="hand2",
+        )
+        close_btn.pack(pady=10)
+
+    def apply_resolution(self, settings_win, width, height):
+        # применяем новое разрешение и сохраняем в settings.txt [web:106][web:102]
+        self.window_width = width
+        self.window_height = height
+        self.set_geometry(width, height)
+        self.save_settings()
+        settings_win.destroy()
 
 
 if __name__ == "__main__":
