@@ -130,8 +130,10 @@ class ZeroTwoGame(tk.Tk):
         super().__init__()
 
         # настройки окна по умолчанию
-        self.default_width = 720
-        self.default_height = 720
+        self.default_width = 1024
+        self.default_height = 768
+        self.screen_width = self.winfo_screenwidth()
+        self.screen_height = self.winfo_screenheight()
 
         # загрузка настроек (разрешение, тема)
         self.window_width, self.window_height, self.active_theme = self.load_settings()
@@ -280,8 +282,8 @@ class ZeroTwoGame(tk.Tk):
 
     def set_geometry(self, w, h):
         self.geometry(f"{w}x{h}+100+100")
-        self.minsize(w, h)
-        self.maxsize(w, h)
+        self.minsize(self.default_width, self.default_height)
+        self.maxsize(self.screen_width, self.screen_height)
         bg_color = self.theme_color("bg") if hasattr(self, "active_theme") else "#ffb6c1"
         self.configure(bg=bg_color)
 
@@ -291,8 +293,8 @@ class ZeroTwoGame(tk.Tk):
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    w = int(data.get("width", self.default_width))
-                    h = int(data.get("height", self.default_height))
+                    w = max(self.default_width, int(data.get("width", self.default_width)))
+                    h = max(self.default_height, int(data.get("height", self.default_height)))
                     theme = str(data.get("theme", theme))
                     if theme not in THEMES:
                         theme = "pink"
@@ -1150,12 +1152,18 @@ class ZeroTwoGame(tk.Tk):
         subtitle.pack(pady=(0, 6))
 
         resolutions = [
-            ("640 x 640", 640, 640),
-            ("800 x 600", 800, 600),
             ("1024 x 768", 1024, 768),
+            ("1280 x 800", 1280, 800),
+            ("1366 x 768", 1366, 768),
+            ("1440 x 900", 1440, 900),
+            ("1600 x 900", 1600, 900),
+            ("1920 x 1080", 1920, 1080),
+            ("Полноэкранный", self.screen_width, self.screen_height),
         ]
 
         for text, w, h in resolutions:
+            if w > self.screen_width or h > self.screen_height:
+                continue
             btn = self.make_button(settings_win, text, lambda width=w, height=h: self.apply_resolution(settings_win, width, height), width=22)
             btn.pack(pady=4)
 
