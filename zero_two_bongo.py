@@ -1,3 +1,4 @@
+import sys
 import tkinter as tk
 from PIL import Image, ImageTk
 from itertools import count
@@ -6,6 +7,11 @@ import json
 import hashlib
 import random
 import time
+
+try:
+    import winsound
+except ImportError:
+    winsound = None
 
 MAIN_GIF = "zero_two.gif"
 ALT_GIF = "zero_two_alt.gif"
@@ -45,6 +51,78 @@ THEMES = {
         "text": "#f8fafc",
     },
 }
+
+TOOLTIPS = {
+    "play": "Начать игру",
+    "shop": "Открыть магазин улучшений",
+    "save": "Сохранить прогресс",
+    "settings": "Открыть настройки",
+    "menu": "Вернуться в главное меню",
+    "hit": "Нажмите или пробел, чтобы ударить",
+    "achievements": "Посмотреть достижения",
+    "themes": "Выбрать тему оформления",
+    "close": "Закрыть окно",
+    "buy": "Купить улучшение",
+}
+
+RESOURCE_DIR = os.path.abspath(os.path.dirname(__file__))
+
+
+def get_resource_path(relative_path):
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(RESOURCE_DIR, relative_path)
+
+TOOLTIPS = {
+    "play": "Начать игру",
+    "shop": "Открыть магазин улучшений",
+    "save": "Сохранить прогресс",
+    "settings": "Открыть настройки",
+    "menu": "Вернуться в главное меню",
+    "hit": "Ударьте по экрану или нажмите пробел",
+    "achievements": "Показать выполненные задания",
+    "themes": "Выбрать тему оформления",
+    "close": "Закрыть окно",
+}
+
+
+class Tooltip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tipwindow = None
+        widget.bind("<Enter>", self.enter)
+        widget.bind("<Leave>", self.leave)
+
+    def enter(self, event=None):
+        self.show_tip()
+
+    def leave(self, event=None):
+        self.hide_tip()
+
+    def show_tip(self):
+        if self.tipwindow or not self.text:
+            return
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 10
+        self.tipwindow = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(
+            tw,
+            text=self.text,
+            justify=tk.LEFT,
+            background="#ffffe0",
+            relief=tk.SOLID,
+            borderwidth=1,
+            font=("Arial", 9),
+        )
+        label.pack(ipadx=4, ipady=2)
+
+    def hide_tip(self):
+        if self.tipwindow:
+            self.tipwindow.destroy()
+            self.tipwindow = None
 
 
 class ZeroTwoGame(tk.Tk):
@@ -89,11 +167,19 @@ class ZeroTwoGame(tk.Tk):
         self.last_bonus_time = 0.0
 
         self.current_frame = None
+        self.active_keys = set()
 
         # флаги процессов
         self.animation_running = False
         self.animation_after_id = None
         self.auto_click_running = False
+
+        self.sound_paths = {
+            "click": get_resource_path(os.path.join("audio", "click.wav")),
+            "hit": get_resource_path(os.path.join("audio", "hit.wav")),
+            "purchase": get_resource_path(os.path.join("audio", "purchase.wav")),
+            "error": get_resource_path(os.path.join("audio", "error.wav")),
+        }
 
         # пробуем загрузить защищённое сохранение
         if os.path.exists(SAVEGAME_FILE):
@@ -113,11 +199,11 @@ class ZeroTwoGame(tk.Tk):
     def apply_theme(self, widget, role, **kwargs):
         widget.configure(bg=self.theme_color(role), fg=self.theme_color("text"), **kwargs)
 
-    def make_button(self, parent, text, command, width=None, height=None):
+    def make_button(self, parent, text, command, width=None, height=None, tooltip_key=None):
         btn = tk.Button(
             parent,
             text=text,
-            command=command,
+            command=lambda *args, **kwargs: self.on_button_click(command),
             fg="white",
             bg=self.theme_color("button_bg"),
             activebackground=self.theme_color("button_active"),
@@ -131,7 +217,49 @@ class ZeroTwoGame(tk.Tk):
             width=width,
             height=height,
         )
+        self.decorate_button(btn)
+        if tooltip_key and tooltip_key in TOOLTIPS:
+            Tooltip(btn, TOOLTIPS[tooltip_key])
         return btn
+
+    def decorate_button(self, button):
+        def on_enter(event):
+            button.configure(bg=self.theme_color("button_active"))
+        def on_leave(event):
+            button.configure(bg=self.theme_color("button_bg"))
+        def on_press(event):
+            button.configure(relief="sunken")
+            self.play_sound("click")
+        def on_release(event):
+            button.configure(relief="raised")
+        button.bind("<Enter>", on_enter)
+        button.bind("<Leave>", on_leave)
+        button.bind("<ButtonPress-1>", on_press)
+        button.bind("<ButtonRelease-1>", on_release)
+
+    def on_button_click(self, command):
+        try:
+            command()
+        except TypeError:
+            try:
+                command(None)
+            except Exception:
+                pass
+
+    def play_sound(self, sound_name):
+        path = self.sound_paths.get(sound_name)
+        if not path or not os.path.exists(path):
+            return
+        if winsound:
+            try:
+                winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            except Exception:
+                pass
+        else:
+            try:
+                self.bell()
+            except Exception:
+                pass
 
     def show_status(self, message, duration=STATUS_DISPLAY_MS):
         if self.status_after_id is not None:
@@ -244,22 +372,22 @@ class ZeroTwoGame(tk.Tk):
         menu_frame = tk.Frame(self.current_frame, bg=self.theme_color("bg"))
         menu_frame.pack()
 
-        play_button = self.make_button(menu_frame, "Играть", self.start_game, width=18)
+        play_button = self.make_button(menu_frame, "Играть", self.start_game, width=18, tooltip_key="play")
         play_button.pack(pady=8)
 
-        shop_button = self.make_button(menu_frame, "Магазин", self.open_shop, width=18)
+        shop_button = self.make_button(menu_frame, "Магазин", self.open_shop, width=18, tooltip_key="shop")
         shop_button.pack(pady=8)
 
-        quest_button = self.make_button(menu_frame, "Задания", self.open_achievements, width=18)
+        quest_button = self.make_button(menu_frame, "Задания", self.open_achievements, width=18, tooltip_key="achievements")
         quest_button.pack(pady=8)
 
-        settings_button = self.make_button(menu_frame, "Настройки", self.open_settings, width=18)
+        settings_button = self.make_button(menu_frame, "Настройки", self.open_settings, width=18, tooltip_key="settings")
         settings_button.pack(pady=8)
 
-        themes_button = self.make_button(menu_frame, "Темы", self.open_theme_picker, width=18)
+        themes_button = self.make_button(menu_frame, "Темы", self.open_theme_picker, width=18, tooltip_key="themes")
         themes_button.pack(pady=8)
 
-        exit_button = self.make_button(menu_frame, "Выход", self.quit_game, width=18)
+        exit_button = self.make_button(menu_frame, "Выход", self.quit_game, width=18, tooltip_key="close")
         exit_button.pack(pady=8)
 
     def show_devs(self):
@@ -337,11 +465,12 @@ class ZeroTwoGame(tk.Tk):
         self.shop_button = self.make_button(button_frame, "Магазин", self.open_shop, width=10)
         self.shop_button.pack(side=tk.LEFT, padx=3)
 
-        self.hit_button = self.make_button(self.panel, "Hit!", self.on_hit, width=10)
+        self.hit_button = self.make_button(self.panel, "Hit!", self.on_hit, width=10, tooltip_key="hit")
         self.hit_button.config(font=("Arial", 14, "bold"), bd=3)
-        self.hit_button.pack(side=tk.RIGHT, padx=10)
+        self.hit_button.pack(side=tk.RIGHT, padx=10, pady=6)
 
         self.bind("<KeyPress>", self.on_key_press)
+        self.bind("<KeyRelease>", self.on_key_release)
 
         # авто-кликер
         self.start_auto_clicker()
@@ -368,11 +497,11 @@ class ZeroTwoGame(tk.Tk):
 
     def load_gif_frames(self):
         # MAIN по умолчанию, ALT только если куплен и выбран
-        if self.use_alt_skin and self.alt_unlocked and os.path.exists(ALT_GIF):
-            gif_path = ALT_GIF
+        if self.use_alt_skin and self.alt_unlocked and os.path.exists(get_resource_path(ALT_GIF)):
+            gif_path = get_resource_path(ALT_GIF)
             alt_mode = True
         else:
-            gif_path = MAIN_GIF
+            gif_path = get_resource_path(MAIN_GIF)
             alt_mode = False
 
         try:
@@ -638,10 +767,17 @@ class ZeroTwoGame(tk.Tk):
     # ===== события =====
 
     def on_hit(self):
+        self.play_sound("hit")
         self.record_hit()
 
     def on_key_press(self, event):
-        self.record_hit()
+        if event.keysym in {"space", "Return"} and event.keysym not in self.active_keys:
+            self.active_keys.add(event.keysym)
+            self.play_sound("hit")
+            self.record_hit()
+
+    def on_key_release(self, event):
+        self.active_keys.discard(event.keysym)
 
     def on_close(self):
         # при выходе сохраняем только защищённый savegame + настройки
@@ -682,64 +818,28 @@ class ZeroTwoGame(tk.Tk):
         )
         info.pack(pady=10)
 
-        btn_x2 = tk.Button(
-            shop,
-            text="Купить x2 множитель (100 Score)",
-            fg="white",
-            bg="#ff1493",
-            activebackground="#ff85c2",
-            activeforeground="white",
-            relief="raised",
-            bd=2,
-            font=("Arial", 11, "bold"),
-            cursor="hand2",
-            command=lambda: self.buy_multiplier(shop, info, 2.0, 100),
-        )
+        btn_x2 = self.make_button(shop, "Купить x2 множитель (100 Score)", lambda: self.buy_multiplier(shop, info, 2.0, 100), width=26, tooltip_key="buy")
         btn_x2.pack(pady=5)
 
-        btn_x4 = tk.Button(
-            shop,
-            text="Купить x4 множитель (250 Score)",
-            fg="white",
-            bg="#ff1493",
-            activebackground="#ff85c2",
-            activeforeground="white",
-            relief="raised",
-            bd=2,
-            font=("Arial", 11, "bold"),
-            cursor="hand2",
-            command=lambda: self.buy_multiplier(shop, info, 4.0, 250),
-        )
+        btn_x4 = self.make_button(shop, "Купить x4 множитель (250 Score)", lambda: self.buy_multiplier(shop, info, 4.0, 250), width=26, tooltip_key="buy")
         btn_x4.pack(pady=5)
 
-        btn_auto = tk.Button(
-            shop,
-            text="Автокликер / ускорение (150 Score)",
-            fg="white",
-            bg="#ff1493",
-            activebackground="#ff85c2",
-            activeforeground="white",
-            relief="raised",
-            bd=2,
-            font=("Arial", 11, "bold"),
-            cursor="hand2",
-            command=lambda: self.buy_autoclick(shop, info, 150),
-        )
+        btn_auto = self.make_button(shop, "Автокликер / ускорение (150 Score)", lambda: self.buy_autoclick(shop, info, 150), width=26, tooltip_key="buy")
         btn_auto.pack(pady=5)
 
-        btn_skin = self.make_button(shop, "Купить ALT скин (200 Score)", lambda: self.buy_skin(shop, info, 200), width=26)
+        btn_skin = self.make_button(shop, "Купить ALT скин (200 Score)", lambda: self.buy_skin(shop, info, 200), width=26, tooltip_key="buy")
         btn_skin.pack(pady=5)
 
-        btn_inventory = self.make_button(shop, "Инвентарь скинов", lambda: self.open_skin_inventory(shop, info), width=26)
+        btn_inventory = self.make_button(shop, "Инвентарь скинов", lambda: self.open_skin_inventory(shop, info), width=26, tooltip_key="buy")
         btn_inventory.pack(pady=5)
 
-        btn_theme = self.make_button(shop, "Купить НЕОН тему (500 Score)", lambda: self.buy_theme(shop, info, 500), width=26)
+        btn_theme = self.make_button(shop, "Купить НЕОН тему (500 Score)", lambda: self.buy_theme(shop, info, 500), width=26, tooltip_key="buy")
         btn_theme.pack(pady=5)
 
-        btn_anim = self.make_button(shop, "Ускорить анимацию (x+0.5) (120 Score)", lambda: self.buy_anim_speed(shop, info, 120), width=26)
+        btn_anim = self.make_button(shop, "Ускорить анимацию (x+0.5) (120 Score)", lambda: self.buy_anim_speed(shop, info, 120), width=26, tooltip_key="buy")
         btn_anim.pack(pady=5)
 
-        close_btn = self.make_button(shop, "Закрыть", shop.destroy, width=26)
+        close_btn = self.make_button(shop, "Закрыть", shop.destroy, width=26, tooltip_key="close")
         close_btn.pack(pady=10)
 
     def shop_info_text(self):

@@ -1,11 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 
+from PyInstaller.utils.hooks import collect_data_files
+
+DATAS = [
+    ('zero_two.gif', '.'),
+    ('zero_two_alt.gif', '.'),
+]
+
+for src, dest in collect_data_files('audio', include_py_files=False):
+    DATAS.append((src, os.path.join('audio', os.path.dirname(os.path.relpath(src, 'audio')))))
+
 a = Analysis(
     ['zero_two_bongo.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=DATAS,
     hiddenimports=['PIL', 'PIL.Image', 'PIL.ImageTk'],
     hookspath=[],
     hooksconfig={},
@@ -22,14 +32,14 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='zero_two_bongo',
+    name='ZeroTwoBongo',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
