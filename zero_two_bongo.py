@@ -3,14 +3,27 @@ from PIL import Image, ImageTk
 from itertools import count
 import os
 import json
+import hashlib
 
 MAIN_GIF = "zero_two.gif"
 ALT_GIF = "zero_two_alt.gif"
 
+# Старые файлы теперь используются только как опциональный бэкап при первом запуске
 SCORE_FILE = "score.txt"
 UPGRADE_FILE = "upgrades.txt"
+
 SAVEGAME_FILE = "savegame.txt"
 SETTINGS_FILE = "settings.txt"
+
+# "секрет" для подписи сохранения (не палим пользователям)
+SAVE_SECRET = "zero_two_super_secret_salt_2026"
+
+# Anti-cheat лимиты (подбирай под баланс)
+MAX_SCORE = 10_000_000
+MAX_MULTIPLIER = 1_000.0
+MAX_ANIM_SPEED = 20.0
+MIN_ANIM_SPEED = 0.5
+MIN_AUTO_INTERVAL = 100  # мс
 
 
 class ZeroTwoGame(tk.Tk):
@@ -27,35 +40,40 @@ class ZeroTwoGame(tk.Tk):
         self.title("Zero Two Bongo")
         self.set_geometry(self.window_width, self.window_height)
 
-        # состояние игры
-        self.score = self.load_score()
-        (
-            self.multiplier,
-            self.auto_interval_ms,
-            self.use_alt_skin,
-            self.anim_speed_factor,
-            self.alt_unlocked,
-        ) = self.load_upgrades()
+        # состояние игры (дефолт)
+        self.score = 0
+        self.multiplier = 1.0
+        self.auto_interval_ms = 0
+        self.use_alt_skin = False
+        self.anim_speed_factor = 1.0
+        self.alt_unlocked = False
 
         self.current_frame = None
 
         # флаги процессов
         self.animation_running = False
+        self.animation_after_id = None
         self.auto_click_running = False
+
+        # пробуем загрузить защищённое сохранение
+        if os.path.exists(SAVEGAME_FILE):
+            self.load_game_manual()
+        else:
+            # если нет savegame – пробуем один раз подхватить старые txt и сразу сохранить в новый формат
+            self.migrate_from_legacy_files()
+            self.save_game_manual()
 
         self.create_start_screen()
 
     # ===== работа с окном / настройками =====
 
     def set_geometry(self, w, h):
-        # фиксируем размер окна
         self.geometry(f"{w}x{h}+100+100")
         self.minsize(w, h)
         self.maxsize(w, h)
         self.configure(bg="#ffb6c1")
 
     def load_settings(self):
-        # формат settings.txt: JSON с {"width": int, "height": int}
         if os.path.exists(SETTINGS_FILE):
             try:
                 with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
@@ -74,6 +92,39 @@ class ZeroTwoGame(tk.Tk):
                 json.dump(data, f)
         except Exception:
             pass
+
+    # ===== миграция со старых txt (один раз) =====
+
+    def migrate_from_legacy_files(self):
+        # score
+        if os.path.exists(SCORE_FILE):
+            try:
+                with open(SCORE_FILE, "r", encoding="utf-8") as f:
+                    val = f.read().strip()
+                    if val:
+                        self.score = int(val)
+            except Exception:
+                self.score = 0
+
+        # upgrades
+        if os.path.exists(UPGRADE_FILE):
+            try:
+                with open(UPGRADE_FILE, "r", encoding="utf-8") as f:
+                    line = f.read().strip()
+                    if line:
+                        parts = line.split(";")
+                        self.multiplier = float(parts[0])
+                        self.auto_interval_ms = int(parts[1])
+                        use_alt = parts[2] == "1"
+                        self.anim_speed_factor = float(parts[3])
+                        self.alt_unlocked = parts[4] == "1" if len(parts) > 4 else False
+                        # если ALT не куплен, MAIN по умолчанию
+                        self.use_alt_skin = use_alt and self.alt_unlocked
+            except Exception:
+                pass
+
+        # применяем anti-cheat лимиты к мигрированным данным
+        self.apply_anti_cheat_limits()
 
     # ===== стартовый экран =====
 
@@ -175,8 +226,8 @@ class ZeroTwoGame(tk.Tk):
     # ===== запуск игры =====
 
     def start_game(self):
-        # при входе в игру сброс флагов
-        self.animation_running = False
+        # сброс анимации и авто-кликера
+        self.stop_animation()
         self.auto_click_running = False
 
         self._switch_frame(bg="#1b1b2f")
@@ -303,10 +354,9 @@ class ZeroTwoGame(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def back_to_menu(self):
-        # при выходе в меню сохраняем прогресс
-        self.save_score()
-        self.save_upgrades()
-        self.animation_running = False
+        # при выходе в меню сохраняем через защищённую систему
+        self.save_game_manual()
+        self.stop_animation()
         self.auto_click_running = False
         self.create_start_screen()
 
@@ -322,8 +372,8 @@ class ZeroTwoGame(tk.Tk):
     # ===== GIF / анимация =====
 
     def load_gif_frames(self):
-        # выбор GIF по флагу use_alt_skin и наличию файла
-        if self.use_alt_skin and os.path.exists(ALT_GIF):
+        # MAIN по умолчанию, ALT только если куплен и выбран
+        if self.use_alt_skin and self.alt_unlocked and os.path.exists(ALT_GIF):
             gif_path = ALT_GIF
             alt_mode = True
         else:
@@ -350,16 +400,24 @@ class ZeroTwoGame(tk.Tk):
 
         base_delay = pil_image.info.get("duration", 100) / 1000.0
 
-        # используем текущий множитель, но его не меняем
         speed_factor = self.anim_speed_factor
         if alt_mode:
-            speed_factor *= 1.5  # ALT чуть быстрее, но фиксированный коэффициент
+            speed_factor *= 1.5  # ALT чуть быстрее
 
         self.base_delay = max(0.02, base_delay / speed_factor)
 
-    def restart_animation(self):
-        # аккуратный перезапуск анимации при смене скина/скорости
+    def stop_animation(self):
         self.animation_running = False
+        if self.animation_after_id is not None:
+            try:
+                self.after_cancel(self.animation_after_id)
+            except Exception:
+                pass
+            self.animation_after_id = None
+
+    def restart_animation(self):
+        # надёжный перезапуск [web:163][web:168]
+        self.stop_animation()
         self.load_gif_frames()
         self.current_frame_index = 0
         self.animation_running = True
@@ -376,70 +434,37 @@ class ZeroTwoGame(tk.Tk):
 
         self.current_frame_index = (self.current_frame_index + 1) % len(self.frames)
         delay_ms = int(self.base_delay * 1000)
-        self.after(delay_ms, self.animate)
+        self.animation_after_id = self.after(delay_ms, self.animate)
 
-    # ===== сохранение / загрузка базовых файлов =====
+    # ===== подпись и защита savegame =====
 
-    def load_score(self):
-        if os.path.exists(SCORE_FILE):
-            try:
-                with open(SCORE_FILE, "r", encoding="utf-8") as f:
-                    val = f.read().strip()
-                    if val:
-                        return int(val)
-            except Exception:
-                return 0
-        return 0
+    def make_checksum(self, payload_str: str) -> str:
+        h = hashlib.sha256()
+        h.update((payload_str + SAVE_SECRET).encode("utf-8"))
+        return h.hexdigest()
 
-    def save_score(self):
-        try:
-            with open(SCORE_FILE, "w", encoding="utf-8") as f:
-                f.write(str(self.score))
-        except Exception:
-            pass
+    def apply_anti_cheat_limits(self):
+        # простые лимиты против накруток [web:243][web:244][web:245][web:247]
+        if self.score < 0 or self.score > MAX_SCORE:
+            self.score = 0
+        if self.multiplier <= 0 or self.multiplier > MAX_MULTIPLIER:
+            self.multiplier = 1.0
+        if self.anim_speed_factor < MIN_ANIM_SPEED or self.anim_speed_factor > MAX_ANIM_SPEED:
+            self.anim_speed_factor = 1.0
+        if self.auto_interval_ms < 0:
+            self.auto_interval_ms = 0
+        elif self.auto_interval_ms != 0 and self.auto_interval_ms < MIN_AUTO_INTERVAL:
+            self.auto_interval_ms = MIN_AUTO_INTERVAL
 
-    def load_upgrades(self):
-        # множитель, автоклик, текущий скин, скорость анимации, флаг "ALT куплен"
-        # MAIN по умолчанию, ALT по умолчанию не куплен
-        default = (1.0, 0, False, 1.0, False)
-        if os.path.exists(UPGRADE_FILE):
-            try:
-                with open(UPGRADE_FILE, "r", encoding="utf-8") as f:
-                    line = f.read().strip()
-                    if line:
-                        parts = line.split(";")
-                        mult = float(parts[0])
-                        auto_ms = int(parts[1])
-                        use_alt = parts[2] == "1"
-                        anim_speed = float(parts[3])
-                        alt_unlocked = parts[4] == "1" if len(parts) > 4 else False
+        # если ALT не куплен, насильно MAIN
+        if not self.alt_unlocked:
+            self.use_alt_skin = False
 
-                        # защита: если ALT не куплен, насильно включаем MAIN
-                        if not alt_unlocked:
-                            use_alt = False
-
-                        return mult, auto_ms, use_alt, anim_speed, alt_unlocked
-            except Exception:
-                return default
-        return default
-
-    def save_upgrades(self):
-        try:
-            with open(UPGRADE_FILE, "w", encoding="utf-8") as f:
-                use_alt_flag = "1" if self.use_alt_skin else "0"
-                alt_unlocked_flag = "1" if self.alt_unlocked else "0"
-                f.write(
-                    f"{self.multiplier};{self.auto_interval_ms};"
-                    f"{use_alt_flag};{self.anim_speed_factor};{alt_unlocked_flag}"
-                )
-        except Exception:
-            pass
-
-    # ===== ручная система сохранений =====
+    # ===== сохранение / загрузка (только savegame.txt) =====
 
     def save_game_manual(self):
-        # сохраняем всё важное состояние одной JSON-структурой
-        data = {
+        # сохраняем состояние
+        payload = {
             "score": self.score,
             "multiplier": self.multiplier,
             "auto_interval_ms": self.auto_interval_ms,
@@ -447,40 +472,66 @@ class ZeroTwoGame(tk.Tk):
             "anim_speed_factor": self.anim_speed_factor,
             "alt_unlocked": self.alt_unlocked,
         }
+
         try:
+            payload_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            checksum = self.make_checksum(payload_str)
+            wrapper = {
+                "data": payload,
+                "checksum": checksum,
+            }
             with open(SAVEGAME_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f)
+                json.dump(wrapper, f, ensure_ascii=False)
         except Exception:
             pass
 
-        info = tk.Label(
-            self.panel,
-            text="Игра сохранена",
-            fg="#1b1b2f",
-            bg="#ff69b4",
-            font=("Arial", 10, "bold"),
-        )
-        info.pack(side=tk.LEFT, padx=5)
-        self.after(2000, info.destroy)
+        # если есть панель (в игре), показываем уведомление
+        if hasattr(self, "panel"):
+            info = tk.Label(
+                self.panel,
+                text="Игра сохранена",
+                fg="#1b1b2f",
+                bg="#ff69b4",
+                font=("Arial", 10, "bold"),
+            )
+            info.pack(side=tk.LEFT, padx=5)
+            self.after(2000, info.destroy)
 
     def load_game_manual(self):
-        # можно вызвать на старте игры, если захочешь автозагрузку
-        if os.path.exists(SAVEGAME_FILE):
-            try:
-                with open(SAVEGAME_FILE, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                self.score = int(data.get("score", self.score))
-                self.multiplier = float(data.get("multiplier", self.multiplier))
-                self.auto_interval_ms = int(data.get("auto_interval_ms", self.auto_interval_ms))
-                self.use_alt_skin = bool(data.get("use_alt_skin", self.use_alt_skin))
-                self.anim_speed_factor = float(data.get("anim_speed_factor", self.anim_speed_factor))
-                self.alt_unlocked = bool(data.get("alt_unlocked", self.alt_unlocked))
+        if not os.path.exists(SAVEGAME_FILE):
+            return
+        try:
+            with open(SAVEGAME_FILE, "r", encoding="utf-8") as f:
+                wrapper = json.load(f)
 
-                # защита: если ALT не куплен, не даём его включить
-                if not self.alt_unlocked:
-                    self.use_alt_skin = False
-            except Exception:
-                pass
+            payload = wrapper.get("data", {})
+            checksum_file = wrapper.get("checksum", "")
+
+            payload_str = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            checksum_calc = self.make_checksum(payload_str)
+
+            # если подпись не совпала — считаем, что файл читерский/битый, не грузим [web:239][web:240][web:246]
+            if checksum_file != checksum_calc:
+                return
+
+            self.score = int(payload.get("score", self.score))
+            self.multiplier = float(payload.get("multiplier", self.multiplier))
+            self.auto_interval_ms = int(payload.get("auto_interval_ms", self.auto_interval_ms))
+            self.use_alt_skin = bool(payload.get("use_alt_skin", self.use_alt_skin))
+            self.anim_speed_factor = float(payload.get("anim_speed_factor", self.anim_speed_factor))
+            self.alt_unlocked = bool(payload.get("alt_unlocked", self.alt_unlocked))
+
+            # применяем anti-cheat лимиты
+            self.apply_anti_cheat_limits()
+
+        except Exception:
+            # при любой ошибке грузим дефолт
+            self.score = 0
+            self.multiplier = 1.0
+            self.auto_interval_ms = 0
+            self.use_alt_skin = False
+            self.anim_speed_factor = 1.0
+            self.alt_unlocked = False
 
     # ===== текст счёта =====
 
@@ -493,6 +544,7 @@ class ZeroTwoGame(tk.Tk):
     def add_score(self, amount):
         gained = int(amount * self.multiplier)
         self.score += gained
+        self.apply_anti_cheat_limits()
         self.update_score_label()
 
     # ===== события =====
@@ -504,11 +556,10 @@ class ZeroTwoGame(tk.Tk):
         self.add_score(1)
 
     def on_close(self):
-        # при выходе сохраняем прогресс и настройки
-        self.save_score()
-        self.save_upgrades()
+        # при выходе сохраняем только защищённый savegame + настройки
+        self.save_game_manual()
         self.save_settings()
-        self.animation_running = False
+        self.stop_animation()
         self.auto_click_running = False
         self.destroy()
 
@@ -666,9 +717,9 @@ class ZeroTwoGame(tk.Tk):
         if self.score >= cost:
             self.score -= cost
             self.multiplier *= factor
+            self.apply_anti_cheat_limits()
             self.update_score_label()
-            self.save_score()
-            self.save_upgrades()
+            self.save_game_manual()
             self.refresh_shop_info(info_label)
             msg = tk.Label(
                 shop_window,
@@ -688,10 +739,10 @@ class ZeroTwoGame(tk.Tk):
                 self.auto_interval_ms = 1000
                 self.start_auto_clicker()
             else:
-                self.auto_interval_ms = max(200, int(self.auto_interval_ms * 0.7))
+                self.auto_interval_ms = max(MIN_AUTO_INTERVAL, int(self.auto_interval_ms * 0.7))
+            self.apply_anti_cheat_limits()
             self.update_score_label()
-            self.save_score()
-            self.save_upgrades()
+            self.save_game_manual()
             self.refresh_shop_info(info_label)
             msg = tk.Label(
                 shop_window,
@@ -705,7 +756,6 @@ class ZeroTwoGame(tk.Tk):
             self._not_enough_score(shop_window)
 
     def buy_skin(self, shop_window, info_label, cost):
-        # покупка ALT‑скина навсегда
         if self.alt_unlocked:
             msg = tk.Label(
                 shop_window,
@@ -720,11 +770,11 @@ class ZeroTwoGame(tk.Tk):
         if self.score >= cost:
             self.score -= cost
             self.alt_unlocked = True
-            self.use_alt_skin = True  # сразу включаем ALT
+            self.use_alt_skin = True
             self.restart_animation()
+            self.apply_anti_cheat_limits()
             self.update_score_label()
-            self.save_score()
-            self.save_upgrades()
+            self.save_game_manual()
             self.refresh_shop_info(info_label)
             msg = tk.Label(
                 shop_window,
@@ -767,7 +817,6 @@ class ZeroTwoGame(tk.Tk):
         )
         btn_main.pack(pady=5)
 
-        # ALT доступен только если куплен
         if self.alt_unlocked:
             btn_alt = tk.Button(
                 inv,
@@ -809,27 +858,26 @@ class ZeroTwoGame(tk.Tk):
         close_btn.pack(pady=10)
 
     def set_skin(self, inv_window, info_label, use_alt):
-        # выбор скина без затрат очков (если ALT куплен)
         if use_alt and not self.alt_unlocked:
             inv_window.destroy()
             return
 
         self.use_alt_skin = use_alt
         self.restart_animation()
+        self.apply_anti_cheat_limits()
         self.update_score_label()
-        self.save_upgrades()
+        self.save_game_manual()
         self.refresh_shop_info(info_label)
         inv_window.destroy()
 
     def buy_anim_speed(self, shop_window, info_label, cost):
         if self.score >= cost:
             self.score -= cost
-            # плавное увеличение скорости вместо бесконечного умножения
             self.anim_speed_factor += 0.5
+            self.apply_anti_cheat_limits()
             self.restart_animation()
             self.update_score_label()
-            self.save_score()
-            self.save_upgrades()
+            self.save_game_manual()
             self.refresh_shop_info(info_label)
             msg = tk.Label(
                 shop_window,
